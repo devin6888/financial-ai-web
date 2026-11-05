@@ -43,14 +43,13 @@ export interface AdminRole {
   docCount: number
 }
 
-/** 用户可读文档的「为什么能读」：管理员全可见 / 本人私有 / 直接授权 / 角色授权。 */
+/** 用户可读文档的「为什么能读」：管理员全可见 / 本人上传 / 直接授权 / 角色授权。 */
 export type AccessReason = 'ADMIN' | 'OWNER' | 'USER' | 'ROLE'
 
 export interface AdminDocumentAccess {
   documentId: number
   title: string | null
   docYear: number | null
-  visibility: string
   reason: AccessReason
 }
 
@@ -60,7 +59,7 @@ export interface AdminRoleDoc {
   documentId: number
   title: string | null
   docYear: number | null
-  resourceType: 'ALL' | 'COMPANY' | 'DOCUMENT'
+  resourceType: 'ALL' | 'DOCUMENT'
   permission: string
   createdAt: string | null
 }
@@ -81,7 +80,6 @@ export interface AdminDocumentOption {
   id: number
   title: string | null
   docYear: number | null
-  visibility: string
   companyId: number | null
   companyName: string | null
 }
@@ -139,12 +137,26 @@ export const listGrants = (params: PageQuery & { q?: string }) =>
 export const searchDocuments = (params: PageQuery & { q?: string }) =>
   request<Paged<AdminDocumentOption>>('/api/admin/documents' + query(params))
 
+/** 一次授权的结果：新建几条、因已存在跳过几条、涉及几个主体 / 几份文档。 */
+export interface GrantResult {
+  created: number
+  skipped: number
+  subjects: number
+  documents: number
+}
+
+/**
+ * 批量授权：多主体 × 多资源。
+ *
+ * resourceType=COMPANY 只是「整家公司」的便捷写法，后端会展开成该公司当前每一份文档
+ * （快照语义：之后新上传的文档不会自动可读）。
+ */
 export const createGrant = (body: {
   subjectType: 'ROLE' | 'USER'
-  subjectId: number
+  subjectIds: number[]
   resourceType: 'COMPANY' | 'DOCUMENT'
-  resourceId: number
-}) => request<{ id: number }>('/api/admin/grants', { method: 'POST', body })
+  resourceIds: number[]
+}) => request<GrantResult>('/api/admin/grants', { method: 'POST', body })
 
 export const deleteGrant = (id: number) =>
   request<{ id: number }>('/api/admin/grants/' + id, { method: 'DELETE' })

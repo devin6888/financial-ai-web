@@ -398,6 +398,17 @@ body[data-resizing] { user-select: none; cursor: col-resize; }
 
 .el-overlay { background-color: rgba(23, 22, 20, 0.34); backdrop-filter: blur(1.5px); }
 
+/* 确认框（ElMessageBox）跟对话框保持同一套表面语言。
+   它的样式按需引入时最容易漏 —— 见 src/main.ts 里那条 import 的注释。 */
+.el-message-box {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--rule-strong);
+  background: var(--paper-raised);
+  box-shadow: 0 24px 70px -30px rgba(23, 22, 20, 0.45);
+}
+.el-message-box__title { font-family: var(--sans); font-size: 16px; color: var(--ink); }
+.el-message-box__content { color: var(--el-text-color-regular); font-size: 13px; line-height: 1.7; }
+
 .el-message {
   border-radius: var(--radius-sm);
   border: 1px solid var(--rule-strong);

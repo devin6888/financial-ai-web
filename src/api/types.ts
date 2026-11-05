@@ -119,6 +119,19 @@ export interface MemoryTrace {
   gateHit: boolean
 }
 
+/**
+ * 本轮若走过行情支路，才有这份 trace（阶段 23）。
+ * asOf 是行情数据的时刻，不是回答的时刻 —— 答案里也会带上它。
+ */
+export interface MarketTrace {
+  tool: string
+  code: string
+  name: string
+  asOf: string
+  error: string
+  facts: number
+}
+
 export interface ChatTrace {
   traceId: string
   retrieval: RetrievalTrace | null
@@ -130,7 +143,9 @@ export interface ChatTrace {
   citationsDropped: number
   contextMs: number
   answerMs: number
+  quMs?: number
   warnings: string[]
+  market?: MarketTrace | null
 }
 
 export interface SessionScope {
@@ -193,6 +208,8 @@ export interface MessageView {
   role: 'USER' | 'ASSISTANT'
   content: string
   citations: Citation[]
+  /** 服务端总耗时（毫秒）；只有助手消息可能有，阶段 23 之前的老消息是 null */
+  elapsedMs?: number | null
   createdAt: string
 }
 

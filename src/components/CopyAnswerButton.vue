@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
-import type { Citation } from '@/api/types'
+import type { Citation, Fact } from '@/api/types'
 import { buildCopyText } from '@/utils/copyAnswer'
 
 /**
@@ -12,7 +12,7 @@ import { buildCopyText } from '@/utils/copyAnswer'
  *    所以要降级到 `document.execCommand('copy')`；
  * 3) 复制成功要给反馈（2 秒复位），否则用户会连点三次。
  */
-const props = defineProps<{ answer: string; citations: Citation[]; streaming?: boolean }>()
+const props = defineProps<{ answer: string; citations: Citation[]; facts?: Fact[]; streaming?: boolean }>()
 
 const state = ref<'idle' | 'done' | 'error'>('idle')
 const message = ref('')
@@ -62,7 +62,7 @@ function legacyCopy(text: string): boolean {
 
 async function onCopy(): Promise<void> {
   if (disabled.value) return
-  const text = buildCopyText(props.answer, props.citations)
+  const text = buildCopyText(props.answer, props.citations, props.facts ?? [])
   if (!text) {
     state.value = 'error'
     message.value = '没有可复制的内容'

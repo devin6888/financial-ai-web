@@ -19,6 +19,7 @@ const WARNINGS: Record<string, string> = {
   company_unresolved: '问题里的公司不在本轮范围内，已拒答',
   company_mention_ignored: '问题里提到的词不像公司名，已忽略',
   evidence_insufficient: '证据不足（模型判定无法支撑该问题）',
+  partial_answer: '只答了能确认的部分（引用与事实仍然有效）',
   scope_acl_hidden: '部分文档因权限被排除',
   scope_acl_filtered_all: '本轮范围内的文档当前账号都不可读',
   scope_unauthorized: '部分文档无权限',
@@ -56,6 +57,11 @@ const WARNINGS: Record<string, string> = {
   context_inferred_ignored_documents: '上下文里的文档与本轮范围冲突，未采用',
   context_inferred_ignored_metric: '上下文里的指标与本轮问题冲突，未采用',
   context_inferred_ignored_years: '上下文里的年份与本轮问题冲突，未采用',
+  market_live: '本轮含实时行情（数据时间见答案末尾）',
+  market_unavailable: '行情服务暂时不可用，本轮只回答了年报部分',
+  market_company_unresolved: '没能确定要查哪只股票的行情，本轮按年报处理',
+  market_missing_as_of: '行情返回里没有数据时间，已按当前时间标注',
+  market_partial: '年报里没找到相关证据，本轮只回答了实时行情那部分',
 }
 
 /** 带参数的警告码：前缀 → 说明生成器。 */
@@ -137,6 +143,8 @@ export const NODE_LABELS: Record<string, string> = {
   rewrite: '改写检索式',
   answer: '生成答案',
   cite_check: '校验引用',
+  market: '查询实时行情',
+  answer_market: '行情答案',
   respond_insufficient: '证据不足，拒答',
   approval: '人工审批',
 }

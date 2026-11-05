@@ -51,6 +51,12 @@ export interface StreamApproval {
   plan: string[] | null
   evidence: unknown[] | null
   steps: unknown[] | null
+  /** 阶段 22：为什么停 / 能点什么 / 系统理解成什么（老后端没有） */
+  ambiguity?: {
+    reasons?: string[]
+    candidates?: { kind: string; value: string | number; label: string }[]
+    understood?: Record<string, unknown>
+  } | null
 }
 
 export interface StreamHandlers {

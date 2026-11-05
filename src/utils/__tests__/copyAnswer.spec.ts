@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { Citation } from '@/api/types'
+import type { Citation, Fact } from '@/api/types'
 import { buildCopyText, citationLine, normalizeWhitespace } from '../copyAnswer'
 
 /**
@@ -114,3 +114,43 @@ describe('copyAnswer：引用块与分隔线（阶段 17）', () => {
   })
 })
 
+
+/**
+ * 数值表（2026-11-03）：页面上「数值」是答案下方独立渲染的一张表（来自 `response.facts`），
+ * 不在 answer 原文里。复制时若不带，粘出去就整整少一块 —— 用户就是这么发现的。
+ */
+describe('copyAnswer：数值表', () => {
+  const fact = (overrides: Partial<Fact> = {}): Fact => ({
+    metric: '营业总收入',
+    period: '2025年',
+    value: '16,067,741,039.51',
+    unit: '元',
+    scope: '合并口径',
+    evidence: '营业总收入 16,067,741,039.51',
+    source: 'TEXT',
+    ...overrides,
+  })
+
+  it('有 facts 时追加「### 数值」表，且排在引用附录之前', () => {
+    const text = buildCopyText('营业总收入 160.68 亿元[E1]。', [cite(1)], [fact()])
+    expect(text).toContain('### 数值')
+    expect(text).toContain('| 指标 | 期间 | 数值 |')
+    expect(text).toContain('| 营业总收入（合并口径） | 2025年 | 16,067,741,039.51 元 |')
+    expect(text.indexOf('### 数值')).toBeLessThan(text.indexOf('### 引用'))
+  })
+
+  it('没有 facts 时不出现「### 数值」（老行为不变）', () => {
+    expect(buildCopyText('一句话。', [])).toBe('一句话。')
+    expect(buildCopyText('一句话。', [], [])).not.toContain('### 数值')
+  })
+
+  it('重复事实按页面同一规则去重：指标+期间+数值+单位+口径', () => {
+    const text = buildCopyText('x[E1]', [cite(1)], [fact(), fact(), fact({ scope: '母公司口径' })])
+    expect(text.match(/\| 营业总收入/g)).toHaveLength(2)
+  })
+
+  it('单元格里的竖线必须转义，否则整张表散架', () => {
+    const text = buildCopyText('x', [], [fact({ metric: 'A|B', unit: null, scope: null })])
+    expect(text).toContain('| A\\|B |')
+  })
+})

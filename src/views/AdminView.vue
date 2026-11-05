@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search } from '@element-plus/icons-vue'
+import { Avatar, Document, InfoFilled, Key, Search, User } from '@element-plus/icons-vue'
 
 import {
   createGrant,
@@ -109,25 +109,29 @@ const roleForm = ref({ id: 0, code: '', name: '' })
 const grantOpen = ref(false)
 const grantBusy = ref(false)
 const grantRole = ref<AdminRole | null>(null)
-const grantPick = ref<AdminDocumentOption | null>(null)
-const grantScope = ref<'COMPANY' | 'DOCUMENT'>('DOCUMENT')
+const grantPicks = ref<AdminDocumentOption[]>([])
+const grantByCompany = ref(false)
+/** 同一次授权可以同时给多个角色（「授给 ANALYST，顺便也给 AUDITOR」）。 */
+const grantExtraRoles = ref<number[]>([])
 const pickerQ = ref('')
 const pickerPage = ref(1)
 const picker = ref<Paged<AdminDocumentOption> | null>(null)
 const pickerLoading = ref(false)
 
 const roleSelected = computed(() => roles.value.find((r) => r.id === roleId.value) ?? null)
+
+/** 概览瓦片用：内置角色（ADMIN/ANALYST/VIEWER 这类不可删的）有几个。 */
+const builtinRoles = computed(() => roles.value.filter((r) => r.system).length)
 const drawerTitle = computed(() => (drawerUser.value ? drawerUser.value.username + ' 可读的文档' : '可读文档'))
 
 const REASON_TEXT: Record<string, string> = {
   ADMIN: '管理员全可见',
-  OWNER: '本人私有',
+  OWNER: '本人上传',
   USER: '直接授权',
   ROLE: '角色授权',
 }
 
-const scopeText = (type: string): string =>
-  type === 'ALL' ? '全租户' : type === 'COMPANY' ? '公司级' : '单份文档'
+const scopeText = (type: string): string => (type === 'ALL' ? '全租户' : '单份文档')
 
 const statusText = (status: string): string => (status === 'ACTIVE' ? '启用' : '停用')
 
@@ -458,49 +462,68 @@ async function loadPicker(): Promise<void> {
 
 function openGrant(role: AdminRole): void {
   grantRole.value = role
-  grantPick.value = null
-  grantScope.value = 'DOCUMENT'
+  grantPicks.value = []
+  grantByCompany.value = false
+  grantExtraRoles.value = []
   pickerQ.value = ''
   pickerPage.value = 1
   grantOpen.value = true
   void loadPicker()
 }
 
-function onPick(row: unknown): void {
-  if (!row) {
-    return
-  }
-  const picked = row as AdminDocumentOption
-  grantPick.value = picked
-  // 租户可见的文档按"公司"生效：只授单份不会让它可读，默认帮管理员选对公司级。
-  grantScope.value = picked.visibility === 'TENANT' && picked.companyId ? 'COMPANY' : 'DOCUMENT'
+function onPickMany(rows: unknown[]): void {
+  grantPicks.value = rows as AdminDocumentOption[]
+  // 多选换了以后旧的「整家公司」决定可能不再成立（跨两家公司），这里直接复位，
+  // 免得用户以为勾的是 A 公司的整包，实际提交了 B 公司的 id。
+  grantByCompany.value = false
 }
 
-const pickNeedsCompany = computed(
-  () => grantPick.value !== null && grantPick.value.visibility === 'TENANT' && grantPick.value.companyId !== null,
+/** 选中的文档全属同一家公司时才允许「按整家公司授权」。 */
+const pickCompany = computed(() => {
+  const picked = grantPicks.value
+  // 用 at(0) 而不是 picked[0]：tsconfig 开了 noUncheckedIndexedAccess，
+  // 下标访问的类型是「元素 | undefined」，直接 .companyId 会编译失败。
+  const first = picked.at(0)
+  if (!first?.companyId) {
+    return null
+  }
+  return picked.every((row) => row.companyId === first.companyId) ? first : null
+})
+
+const grantHint = computed(() =>
+  grantByCompany.value
+    ? '会把这家公司当前的全部文档各授一条授权。之后新上传的文档不会自动可读 —— 那是快照，想放开就再授一次。'
+    : '只授选中的这几份。文档默认只有上传者自己能看，别人要看都得在这里显式授权。',
 )
 
 async function submitGrant(): Promise<void> {
-  if (!grantRole.value || !grantPick.value) {
-    ElMessage.warning('先在列表里选中一份文档')
+  if (!grantRole.value) {
     return
   }
-  const document = grantPick.value
-  const resourceType = grantScope.value
-  const resourceId = resourceType === 'COMPANY' ? document.companyId : document.id
-  if (!resourceId) {
-    ElMessage.warning('这份文档没有归属公司，只能按单份授权')
+  if (!grantPicks.value.length) {
+    ElMessage.warning('至少选一份文档')
     return
+  }
+  if (grantByCompany.value && !pickCompany.value) {
+    ElMessage.warning('所选文档不属于同一家公司，无法按整家公司授权')
+    return
+  }
+  const subjectIds = [grantRole.value.id, ...grantExtraRoles.value.filter((id) => id !== grantRole.value?.id)]
+  const body = {
+    subjectType: 'ROLE' as const,
+    subjectIds,
+    resourceType: (grantByCompany.value ? 'COMPANY' : 'DOCUMENT') as 'COMPANY' | 'DOCUMENT',
+    resourceIds: grantByCompany.value
+      ? [pickCompany.value?.companyId as number]
+      : grantPicks.value.map((row) => row.id),
   }
   grantBusy.value = true
   try {
-    await createGrant({
-      subjectType: 'ROLE',
-      subjectId: grantRole.value.id,
-      resourceType,
-      resourceId,
-    })
-    ElMessage.success('已授权给 ' + grantRole.value.code)
+    const result = await createGrant(body)
+    const tail = result.skipped > 0 ? `，${result.skipped} 条已存在跳过` : ''
+    ElMessage.success(
+      `已授权 ${result.documents} 份文档 × ${result.subjects} 个角色（新建 ${result.created} 条${tail}）`,
+    )
     grantOpen.value = false
     await Promise.all([loadRoles(), refreshOverview(), loadGrants()])
     await loadRoleDocs()
@@ -516,10 +539,7 @@ async function revokeRoleDoc(value: unknown): Promise<void> {
   if (row.grantId === null) {
     return
   }
-  const question =
-    row.resourceType === 'COMPANY'
-      ? '撤销「' + (row.title ?? '') + '」所在公司的授权？该公司全部文档都会对该角色不可读。'
-      : '撤销「' + (row.title ?? '') + '」对该角色的授权？'
+  const question = '撤销「' + (row.title ?? '') + '」对该角色的授权？撤销后对方立刻读不到这份文档。'
   try {
     await ElMessageBox.confirm(question, '撤销授权', {
       type: 'warning',
@@ -558,6 +578,13 @@ async function revokeGrant(value: unknown): Promise<void> {
   } catch (e) {
     handle(e)
   }
+}
+
+/** 点概览瓦片切页签：v-model 改动不一定触发 tab-change，这里显式补一次加载。 */
+function goTab(name: 'users' | 'roles' | 'grants'): void {
+  if (tab.value === name) return
+  tab.value = name
+  onTabChange(name)
 }
 
 function onTabChange(name: string | number): void {
@@ -630,18 +657,60 @@ async function refreshOverview(): Promise<void> {
         desc="管理本租户的账号、角色，以及每个角色能读到哪些文档。授权结果与检索时的判定完全一致。"
       >
         <template #actions>
-          <div class="stats">
-            <span class="stat"><b>{{ overview?.users ?? '—' }}</b>账号</span>
-            <span class="stat"><b>{{ overview?.roles ?? '—' }}</b>角色</span>
-            <span class="stat"><b>{{ overview?.documents ?? '—' }}</b>文档</span>
-            <span class="stat"><b>{{ overview?.grants ?? '—' }}</b>授权</span>
-          </div>
+          <button class="ghost" type="button" @click="refreshOverview">刷新概览</button>
         </template>
       </PageHeader>
 
       <div class="scroll">
         <div class="shell">
           <div class="body">
+        <!-- 概览条：一行四块等宽瓦片，只占 84px，把纵向空间留给表格 -->
+        <section class="bento" aria-label="概览">
+          <button class="tile tint-user" type="button" @click="goTab('users')">
+            <span class="tile-icon"><el-icon><User /></el-icon></span>
+            <span class="tile-main">
+              <span class="tile-top">
+                <span class="tile-label">账号</span>
+                <span class="tile-num">{{ overview?.users ?? '—' }}</span>
+              </span>
+              <span class="tile-sub">含已停用账号</span>
+            </span>
+          </button>
+
+          <button class="tile tint-role" type="button" @click="goTab('roles')">
+            <span class="tile-icon"><el-icon><Avatar /></el-icon></span>
+            <span class="tile-main">
+              <span class="tile-top">
+                <span class="tile-label">角色</span>
+                <span class="tile-num">{{ overview?.roles ?? '—' }}</span>
+              </span>
+              <span class="tile-sub">其中内置 {{ builtinRoles }} 个</span>
+            </span>
+          </button>
+
+          <div class="tile tint-doc">
+            <span class="tile-icon"><el-icon><Document /></el-icon></span>
+            <span class="tile-main">
+              <span class="tile-top">
+                <span class="tile-label">文档</span>
+                <span class="tile-num">{{ overview?.documents ?? '—' }}</span>
+              </span>
+              <span class="tile-sub">本租户已入库年报</span>
+            </span>
+          </div>
+
+          <button class="tile tint-grant" type="button" @click="goTab('grants')">
+            <span class="tile-icon"><el-icon><Key /></el-icon></span>
+            <span class="tile-main">
+              <span class="tile-top">
+                <span class="tile-label">授权记录</span>
+                <span class="tile-num">{{ overview?.grants ?? '—' }}</span>
+              </span>
+              <span class="tile-sub">授予与撤销即刻生效</span>
+            </span>
+          </button>
+        </section>
+
         <el-tabs v-model="tab" class="tabs" @tab-change="onTabChange">
           <!-- ============ 账号 ============ -->
           <el-tab-pane label="账号" name="users">
@@ -809,7 +878,7 @@ async function refreshOverview(): Promise<void> {
                         <template #default="{ row }">
                           <el-tag
                             size="small"
-                            :type="row.resourceType === 'ALL' ? 'info' : row.resourceType === 'COMPANY' ? 'warning' : 'success'"
+                            :type="row.resourceType === 'ALL' ? 'info' : 'success'"
                             effect="plain"
                           >
                             {{ scopeText(row.resourceType) }}
@@ -925,6 +994,14 @@ async function refreshOverview(): Promise<void> {
                 </div>
               </div>
 
+              <p class="pane-hint">
+                <el-icon><InfoFilled /></el-icon>
+                <span>
+                  文档默认只有上传者可见；要让别人读，必须显式授权，可一次授给多个角色。
+                  这里的「可读」与检索时用的是同一套判定 —— 管理页说能读，检索就一定读得到。
+                </span>
+              </p>
+
               <el-table
                 v-loading="grantsLoading"
                 :data="grants?.items ?? []"
@@ -944,7 +1021,7 @@ async function refreshOverview(): Promise<void> {
                   <template #default="{ row }">
                     <div class="who">
                       <span class="doc-title">{{ row.resourceName || row.resourceId }}</span>
-                      <span class="name">{{ row.resourceType === 'COMPANY' ? '整家公司' : '单份文档' }}</span>
+                      <span class="name">{{ row.resourceType === 'ALL' ? '角色天生全可见' : '单份文档' }}</span>
                     </div>
                   </template>
                 </el-table-column>
@@ -1090,10 +1167,10 @@ async function refreshOverview(): Promise<void> {
         :data="picker?.items ?? []"
         row-key="id"
         class="grid picker"
-        highlight-current-row
         empty-text="没有匹配的文档"
-        @current-change="onPick"
+        @selection-change="onPickMany"
       >
+        <el-table-column type="selection" width="42" />
         <el-table-column label="文档" min-width="300">
           <template #default="{ row }">
             <div class="who">
@@ -1102,12 +1179,8 @@ async function refreshOverview(): Promise<void> {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="可见性" width="100">
-          <template #default="{ row }">
-            <el-tag size="small" effect="plain" :type="row.visibility === 'TENANT' ? undefined : 'info'">
-              {{ row.visibility === 'TENANT' ? '公司级' : '私有' }}
-            </el-tag>
-          </template>
+        <el-table-column label="公司" width="160">
+          <template #default="{ row }">{{ row.companyName || '未归属' }}</template>
         </el-table-column>
       </el-table>
       <div class="pane-foot">
@@ -1121,21 +1194,31 @@ async function refreshOverview(): Promise<void> {
         />
       </div>
 
-      <div v-if="grantPick" class="scope-box">
-        <div class="scope-title">授权范围</div>
-        <el-radio-group v-model="grantScope">
-          <el-radio value="COMPANY" :disabled="!grantPick.companyId">
-            整家公司（{{ grantPick.companyName || '未归属' }}）
-          </el-radio>
-          <el-radio value="DOCUMENT" :disabled="pickNeedsCompany">仅这一份文档</el-radio>
-        </el-radio-group>
-        <p v-if="pickNeedsCompany" class="field-hint">
-          这份文档是「公司级可见」，权限按公司生效：只授单份不会让它对该角色可读，请选整家公司。
-        </p>
+      <div v-if="grantPicks.length" class="scope-box">
+        <div class="scope-title">已选 {{ grantPicks.length }} 份文档</div>
+        <el-checkbox v-model="grantByCompany" :disabled="!pickCompany">
+          按整家公司授权（{{ pickCompany?.companyName || '所选文档不属于同一家公司' }}）
+        </el-checkbox>
+        <p class="field-hint">{{ grantHint }}</p>
       </div>
+
+      <el-form label-position="top" class="form grant-extra">
+        <el-form-item label="同时授给其他角色（可选）">
+          <el-select v-model="grantExtraRoles" multiple placeholder="一次授权给多个角色" class="grant-roles">
+            <el-option
+              v-for="role in roles.filter((r) => r.id !== grantRole?.id)"
+              :key="role.id"
+              :label="role.name + '（' + role.code + '）'"
+              :value="role.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
       <template #footer>
         <el-button @click="grantOpen = false">取消</el-button>
-        <el-button type="primary" :loading="grantBusy" :disabled="!grantPick" @click="submitGrant">授权</el-button>
+        <el-button type="primary" :loading="grantBusy" :disabled="!grantPicks.length" @click="submitGrant">
+          授权
+        </el-button>
       </template>
     </el-dialog>
 
@@ -1186,42 +1269,216 @@ async function refreshOverview(): Promise<void> {
 
 /* 内容居中限宽：表格是卡片里的一张表，不是浏览器窗口的边框 */
 .shell {
-  max-width: 1180px;
+  max-width: 1240px;
   margin: 0 auto;
 }
 
 .body {
-  padding: 8px 32px 56px;
+  padding: 6px 32px 64px;
 }
 
-.stats {
+/* ---------- 便当盒概览（Bento Grid）----------
+   骨架：4 列等宽网格 + 12px 间距，单行 84px 高。
+   纵向空间优先留给表格，所以瓦片是横排小卡：图标 + 「标签 / 数字」+ 一行注释。
+   底色用纸墨体系的低饱和暖调，避免把冷色便当盒贴到暖白纸上。 */
+.bento {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 4px 0 16px;
+}
+
+.tile {
   display: flex;
-  gap: 20px;
+  align-items: center;
+  gap: 12px;
+  min-height: 84px;
+  padding: 12px 16px;
+  border: 1px solid var(--rule);
+  border-radius: 18px;
+  background: var(--paper-raised);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: default;
+  transition:
+    transform 0.18s var(--ease),
+    box-shadow 0.18s var(--ease),
+    border-color 0.18s var(--ease);
 }
 
-.stat {
+button.tile {
+  cursor: pointer;
+}
+
+button.tile:hover {
+  transform: translateY(-2px);
+  border-color: var(--rule-strong);
+  box-shadow: 0 10px 24px rgba(23, 22, 20, 0.07);
+}
+
+button.tile:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tint-user {
+  background: #fbf1ed;
+}
+
+.tint-role {
+  background: #f8f1e3;
+}
+
+.tint-doc {
+  background: #eff3f0;
+}
+
+.tint-grant {
+  background: #f6f1e9;
+}
+
+.tile-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: rgba(255, 252, 246, 0.75);
+  color: var(--ink-2);
+  font-size: 15px;
+}
+
+.tile-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.tile-top {
   display: flex;
   align-items: baseline;
-  gap: 5px;
-  font-size: 11.5px;
-  color: var(--ink-4);
+  justify-content: space-between;
+  gap: 8px;
 }
 
-.stat b {
-  font-size: 17px;
+.tile-label {
+  font-size: 12px;
   font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.tile-num {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.15;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
 }
 
-.tabs :deep(.el-tabs__header) {
-  margin: 0 0 16px;
+.tile-sub {
+  display: block;
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 授权页顶部的一句话说明（原来占了一张 2x1 说明瓦片，太费纵向空间） */
+.pane-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 16px 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--paper-sink);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+.pane-hint .el-icon {
+  flex: none;
+  margin-top: 3px;
+  color: var(--ink-4);
+}
+
+.ghost {
+  padding: 6px 12px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-pill);
+  background: var(--paper-raised);
+  color: var(--ink-3);
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    color 0.15s var(--ease),
+    border-color 0.15s var(--ease);
+}
+
+.ghost:hover {
+  color: var(--ink);
+  border-color: var(--rule-strong);
+}
+
+/* 页签做成胶囊分段控件：便当盒里只留一块"当前在哪里"的软标记，不再用下划线。
+   选择器必须以「.tabs 的直接子元素 header」为锚：角色详情里的子页签同样叫 .el-tabs__nav，
+   不加这层限定会被一起改成胶囊。 */
+.tabs > :deep(.el-tabs__header) {
+  margin: 0 0 12px;
+}
+
+.tabs > :deep(.el-tabs__header) .el-tabs__nav-wrap::after {
+  display: none;
+}
+
+.tabs > :deep(.el-tabs__header) .el-tabs__nav {
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--paper-sink);
+}
+
+.tabs > :deep(.el-tabs__header) .el-tabs__active-bar {
+  display: none;
+}
+
+.tabs > :deep(.el-tabs__header) .el-tabs__item {
+  height: 32px;
+  padding: 0 18px;
+  border-radius: var(--radius-pill);
+  color: var(--ink-3);
+  font-size: 12.5px;
+  line-height: 32px;
+  transition:
+    background 0.15s var(--ease),
+    color 0.15s var(--ease);
+}
+
+.tabs > :deep(.el-tabs__header) .el-tabs__item:hover {
+  color: var(--ink);
+}
+
+.tabs > :deep(.el-tabs__header) .el-tabs__item.is-active {
+  background: var(--paper-raised);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(23, 22, 20, 0.07);
 }
 
 .pane {
   background: var(--paper-raised);
   border: 1px solid var(--rule);
-  border-radius: var(--radius-lg);
+  border-radius: 20px;
   overflow: hidden;
 }
 
@@ -1230,7 +1487,7 @@ async function refreshOverview(): Promise<void> {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 13px 18px;
+  padding: 16px 20px;
   border-bottom: 1px solid var(--rule);
 }
 
@@ -1238,7 +1495,7 @@ async function refreshOverview(): Promise<void> {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--ink);
 }
@@ -1270,7 +1527,7 @@ async function refreshOverview(): Promise<void> {
 .pane-foot {
   display: flex;
   justify-content: flex-end;
-  padding: 12px 16px;
+  padding: 14px 20px;
   border-top: 1px solid var(--rule);
 }
 
@@ -1290,9 +1547,13 @@ async function refreshOverview(): Promise<void> {
   font-weight: 500;
 }
 
-.grid :deep(th.el-table__cell),
+.grid :deep(th.el-table__cell) {
+  padding: 7px 0;
+}
+
+/* 一行两行文字的行，纵向压紧：20 条一页时能多露出一屏 */
 .grid :deep(td.el-table__cell) {
-  padding: 8px 0;
+  padding: 5px 0;
 }
 
 .grid :deep(td.el-table__cell) {
@@ -1306,8 +1567,9 @@ async function refreshOverview(): Promise<void> {
 .who {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
+  line-height: 1.35;
 }
 
 .login {
@@ -1387,13 +1649,13 @@ async function refreshOverview(): Promise<void> {
 /* 角色：左侧列表 + 右侧详情，详情里再分「文档权限 / 成员」 */
 .roles {
   display: grid;
-  grid-template-columns: 268px minmax(0, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
 
 .role-list {
-  padding-bottom: 4px;
+  padding: 6px 8px 12px;
 }
 
 .role-card {
@@ -1401,13 +1663,16 @@ async function refreshOverview(): Promise<void> {
   flex-direction: column;
   gap: 3px;
   width: 100%;
-  padding: 11px 16px;
-  border: 0;
-  border-bottom: 1px solid var(--rule);
+  margin-bottom: 4px;
+  padding: 12px 14px;
+  border: 1px solid transparent;
+  border-radius: 14px;
   background: transparent;
   text-align: left;
   cursor: pointer;
-  transition: background 0.15s var(--ease);
+  transition:
+    background 0.15s var(--ease),
+    border-color 0.15s var(--ease);
 }
 
 .role-card:hover {
@@ -1416,6 +1681,7 @@ async function refreshOverview(): Promise<void> {
 
 .role-card.on {
   background: var(--accent-soft);
+  border-color: rgba(178, 58, 40, 0.2);
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
@@ -1452,7 +1718,7 @@ async function refreshOverview(): Promise<void> {
 }
 
 .role-detail {
-  min-height: 430px;
+  min-height: 460px;
 }
 
 .detail-title {
@@ -1481,7 +1747,7 @@ async function refreshOverview(): Promise<void> {
 }
 
 .sub-tabs {
-  padding: 4px 18px 0;
+  padding: 4px 20px 0;
 }
 
 .sub-tabs :deep(.el-tabs__header) {
@@ -1559,5 +1825,35 @@ async function refreshOverview(): Promise<void> {
   font-size: 13px;
   line-height: 1.8;
   color: var(--ink-3);
+}
+
+/* 窄屏：4 列塌成 2 列；角色页左侧列表落到详情上方 */
+@media (max-width: 1100px) {
+  .bento {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .roles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .role-list {
+    max-height: 320px;
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .body {
+    padding: 4px 16px 48px;
+  }
+
+  .bento {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pane-tools {
+    flex-wrap: wrap;
+  }
 }
 </style>

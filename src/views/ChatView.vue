@@ -3,7 +3,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { ask, askStream } from '@/api/chat'
-import { resumeAgent, type AgentFinalView, type AgentHandlers, type AgentRunView } from '@/api/agent'
+import {
+  resumeAgent,
+  type AgentFinalView,
+  type AgentHandlers,
+  type AgentRunView,
+  type ApprovalPick,
+} from '@/api/agent'
 import { ApiError } from '@/api/client'
 import { getContext, listMessages } from '@/api/conversations'
 import { listSelectableDocuments } from '@/api/documents'
@@ -100,6 +106,7 @@ function emptyAgent(question: string): AgentRunView {
     warnings: [],
     evidence: [],
     steps: [],
+    ambiguity: null,
   }
 }
 
@@ -329,7 +336,12 @@ async function askWithStream(
  * 提交人工决定。三种决定都走同一个流式端点，后续 delta / final 与首次调用完全同构，
  * 所以这里复用 agentHandlers —— 少一套渲染路径就少一处不一致。
  */
-async function decide(messageId: string, decision: 'APPROVE' | 'EDIT' | 'REJECT', note: string): Promise<void> {
+async function decide(
+  messageId: string,
+  decision: 'APPROVE' | 'EDIT' | 'REJECT',
+  note: string,
+  pick: ApprovalPick = {},
+): Promise<void> {
   const message = messages.value.find((item) => item.id === messageId)
   const runId = message?.agent?.runId
   if (!message || !runId || asking.value) return
@@ -349,7 +361,7 @@ async function decide(messageId: string, decision: 'APPROVE' | 'EDIT' | 'REJECT'
   })
 
   try {
-    await resumeAgent(runId, decision, note || null, handlers)
+    await resumeAgent(runId, decision, note || null, handlers, undefined, pick)
     timings.totalMs = Date.now() - started
     if (final) {
       const view = final as AgentFinalView
@@ -479,6 +491,8 @@ function toMessage(item: MessageView): ChatMessage {
     role: 'ASSISTANT',
     text: item.content,
     at,
+    // 历史消息没有前端墙钟，只能靠后端落库的耗时（V20 起才有）
+    ...(item.elapsedMs ? { timings: { firstStageMs: null, metaMs: null, firstTokenMs: null, totalMs: item.elapsedMs } } : {}),
     response: {
       sufficient: true,
       answer: item.content,
@@ -790,7 +804,7 @@ const contextText = computed(() => {
             @cite="showPage(item.id, $event)"
             @chip="showEvidence(item.id, $event)"
             @panel="openDiagnose(item.id)"
-            @decide="(decision, note) => decide(item.id, decision, note)"
+            @decide="(decision, note, pick) => decide(item.id, decision, note, pick)"
           />
           <div ref="endRef" class="stream-end" aria-hidden="true" />
         </div>

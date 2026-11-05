@@ -1,4 +1,5 @@
-import type { Citation } from '@/api/types'
+import type { Citation, Fact } from '@/api/types'
+import { factsToMarkdown } from './facts'
 
 /**
  * 把答案原文整理成「可以直接粘到飞书 / GitHub / Notion 的 markdown」。
@@ -46,8 +47,14 @@ function pageRange(citation: Citation): string {
  *
  * @param answer   后端返回的答案原文（markdown 子集）
  * @param citations 本次答案的引用（编号 = 下标 + 1）
+ * @param facts     数值事实表（`response.facts`）。页面上它是答案下方独立渲染的一张表，
+ *                  不在 `answer` 里 —— 复制时若不带，粘出去就少了一整块内容。
  */
-export function buildCopyText(answer: string | null | undefined, citations: Citation[]): string {
+export function buildCopyText(
+  answer: string | null | undefined,
+  citations: Citation[],
+  facts: readonly Fact[] = [],
+): string {
   const raw = (answer ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
   if (!raw.trim()) return ''
 
@@ -62,11 +69,22 @@ export function buildCopyText(answer: string | null | undefined, citations: Cita
   const body = normalizeWhitespace(withMarkers)
   if (!body) return ''
 
-  const lines = used.slice().sort((a, b) => a - b).map((no) => citationLine(no, citations[no - 1] as Citation))
-  if (lines.length === 0) return body
+  // 数值表与引用附录是两块独立内容，顺序与页面一致：正文 → 数值 → 引用。
+  // 标题都用 ###：答案骨架的分节也用 ###，两者同级，粘到外部文档里不会出现附录比正文更高一级。
+  const sections = [body]
 
-  // 附录标题用 ###：答案骨架的分节也用 ###，两者同级，粘到外部文档里不会出现「引用」比正文更高一级
-  return body + '\n\n---\n\n### 引用\n\n' + lines.join('\n') + '\n'
+  const factTable = factsToMarkdown(facts)
+  if (factTable) {
+    sections.push('### 数值\n\n' + factTable)
+  }
+
+  const lines = used.slice().sort((a, b) => a - b).map((no) => citationLine(no, citations[no - 1] as Citation))
+  if (lines.length > 0) {
+    sections.push('### 引用\n\n' + lines.join('\n'))
+  }
+
+  if (sections.length === 1) return body
+  return sections.join('\n\n---\n\n') + '\n'
 }
 
 /** 空白归一：去行尾空格、压缩连续空行、表格与引用块前后、分隔线前后各留一个空行。 */

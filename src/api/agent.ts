@@ -37,6 +37,38 @@ export interface AgentStep {
   durationMs: number | null
 }
 
+/** 审批卡上的一个候选（YEAR / ALL_YEARS / COMPANY），value 是年份数字或公司代码。 */
+export interface AgentCandidate {
+  kind: 'YEAR' | 'ALL_YEARS' | 'COMPANY' | string
+  value: string | number
+  label: string
+}
+
+/** 系统当前对问题的理解（审批卡第二块）。 */
+export interface AgentUnderstood {
+  queryType?: string | null
+  companyCodes?: string[]
+  metrics?: string[]
+  yearFrom?: number
+  yearTo?: number
+  scopeYears?: number[]
+  answerShapes?: string | null
+}
+
+/** 审批载荷里的「为什么停 / 能点什么 / 理解成什么」（阶段 22）。 */
+export interface AgentAmbiguity {
+  reasons: string[]
+  candidates: AgentCandidate[]
+  understood: AgentUnderstood
+}
+
+/** 审批卡里可点的选项，原样交给后端（年份单选或公司多选）。 */
+export interface ApprovalPick {
+  yearFrom?: number | null
+  yearTo?: number | null
+  companyCodes?: string[]
+}
+
 export interface AgentRunView {
   runId: string
   status: 'RUNNING' | 'WAITING_APPROVAL' | 'DONE' | 'REJECTED' | 'FAILED' | string
@@ -50,6 +82,8 @@ export interface AgentRunView {
   warnings: string[]
   evidence: AgentEvidence[]
   steps: AgentStep[]
+  /** 只有停在审批时才有；老后端没有这个字段 */
+  ambiguity?: AgentAmbiguity | null
 }
 
 /** final 的载荷：运行视图 + 后端合成的标准响应（老后端没有 response，调用方要能回落）。 */
@@ -72,8 +106,15 @@ export async function resumeAgent(
   note: string | null,
   handlers: AgentHandlers,
   signal?: AbortSignal,
+  pick?: ApprovalPick,
 ): Promise<void> {
-  const body = { decision, note: note ?? '' }
+  const body = {
+    decision,
+    note: note ?? '',
+    yearFrom: pick?.yearFrom ?? null,
+    yearTo: pick?.yearTo ?? null,
+    companyCodes: pick?.companyCodes ?? [],
+  }
   await postStream('/api/agent/runs/' + runId + '/resume', body, CHAT_TIMEOUT_MS, (frame) => handle(frame, handlers), signal)
 }
 

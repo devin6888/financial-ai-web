@@ -1,25 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { Fact } from '@/api/types'
+import { uniqueFacts } from '@/utils/facts'
 
 const props = defineProps<{ facts: Fact[] }>()
 
-/**
- * 同一条事实常常被多份证据各抽一次（同一张表在相邻块里重复出现），
- * 直接渲染会得到四行一模一样的结果，看起来像 bug。这里按「指标 + 期间 + 数值 + 单位 + 口径」
- * 去重，保留首次出现的位置。
- */
-const unique = computed<Fact[]>(() => {
-  const seen = new Set<string>()
-  const out: Fact[] = []
-  for (const fact of props.facts) {
-    const key = [fact.metric, fact.period, fact.value, fact.unit ?? '', fact.scope ?? ''].join('\u0001')
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push(fact)
-  }
-  return out
-})
+/** 去重规则与「复制为 Markdown」共用一份（见 utils/facts.ts）：页面几行，复制就几行。 */
+const unique = computed<Fact[]>(() => uniqueFacts(props.facts))
 </script>
 
 <template>

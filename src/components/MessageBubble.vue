@@ -17,7 +17,7 @@ const emit = defineEmits<{
   cite: [number]
   chip: [number]
   panel: []
-  decide: [decision: 'APPROVE' | 'EDIT' | 'REJECT', note: string]
+  decide: [decision: 'APPROVE' | 'EDIT' | 'REJECT', note: string, pick: import('@/api/agent').ApprovalPick]
 }>()
 
 const response = computed<ChatResponse | null>(() => props.message.response ?? null)
@@ -69,6 +69,27 @@ const elapsed = computed(() => {
 
 const warnings = computed(() => (response.value?.warnings ?? []).filter((code) => code !== 'evidence_insufficient'))
 
+/**
+ * 行情角标：只在真拿到行情时出现，且必须带「哪一天的几点」。
+ * 价格是快照，不带时间的价格比没有价格更危险 —— 用户会当成现价。
+ */
+const market = computed(() => response.value?.trace?.market ?? null)
+
+const marketChip = computed(() => {
+  const m = market.value
+  if (!m) return ''
+  if (m.error) return '行情暂不可用'
+  if (!m.asOf) return '实时行情'
+  return '实时行情 · ' + m.asOf.slice(5, 10) + ' ' + timeText(m.asOf)
+})
+
+const marketTip = computed(() => {
+  const m = market.value
+  if (!m) return ''
+  if (m.error) return m.error
+  return (m.name || m.code) + ' · 东方财富公开行情 · ' + (m.tool === 'get_history' ? '历史区间' : '实时快照')
+})
+
 const typeLabel: Record<string, string> = { TABLE: '表格', TEXT: '正文', NARRATIVE: '叙述' }
 
 function pageText(c: { pageStart: number | null; pageEnd: number | null }): string {
@@ -107,6 +128,7 @@ function timeText(at: string): string {
       </div>
       <div class="head">
         <span v-if="confidence" class="fa-chip" :class="confidence.cls">{{ confidence.text }}</span>
+        <span v-if="marketChip" class="fa-chip market-chip" :title="marketTip">{{ marketChip }}</span>
         <StageLine
           v-if="message.pending"
           :phase="message.stage?.phase ?? null"
@@ -121,9 +143,9 @@ function timeText(at: string): string {
       <ApprovalCard
         v-if="message.agent?.status === 'WAITING_APPROVAL'"
         :plan="message.agent.plan"
-        :evidence-count="message.agent.evidence.length"
+        :ambiguity="message.agent.ambiguity ?? null"
         :busy="message.agentBusy === true"
-        @decide="(decision, note) => emit('decide', decision, note)"
+        @decide="(decision, note, pick) => emit('decide', decision, note, pick)"
       />
 
       <EvidenceStrip v-if="previewItems.length" class="preview" :items="previewItems" :max="4" />
@@ -158,7 +180,12 @@ function timeText(at: string): string {
 
         <div v-if="response && !message.streaming" class="actions">
           <span v-if="droppedNote" class="fa-faint dropped">{{ droppedNote }}</span>
-          <CopyAnswerButton :answer="message.text" :citations="citations" :streaming="message.streaming" />
+          <CopyAnswerButton
+            :answer="message.text"
+            :citations="citations"
+            :facts="response?.facts ?? []"
+            :streaming="message.streaming"
+          />
           <button type="button" class="link" @click="emit('panel')">诊断</button>
         </div>
 
@@ -309,4 +336,12 @@ function timeText(at: string): string {
 .warn { font-size: 11px; color: var(--ink-3); display: inline-flex; align-items: center; gap: 5px; }
 .warn::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--gold); }
 .more { font-size: 11px; }
+
+/* 行情角标：与置信度同排，用青色区分「这是外部实时数据，不是年报证据」 */
+.market-chip {
+  background: rgba(44, 90, 86, 0.08);
+  border-color: rgba(44, 90, 86, 0.22);
+  color: var(--teal, #2c5a56);
+  cursor: help;
+}
 </style>
